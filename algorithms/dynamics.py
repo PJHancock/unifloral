@@ -5,17 +5,17 @@ import os
 import pickle
 from typing import Optional
 
-import d4rl
 from flax.core import frozen_dict
 import flax.linen as nn
 from flax.training.train_state import TrainState
-import gym
+import gymnasium as gym
 import jax
 import jax.numpy as jnp
 import optax
 import tyro
 import wandb
 
+from utils import load_d4rl_dataset
 from termination_fns import get_termination_fn
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
@@ -467,14 +467,14 @@ if __name__ == "__main__":
 
     # --- Initialize environment and dataset ---
     env = gym.make(args.dataset)
-    dataset = d4rl.qlearning_dataset(env)
+    dataset_dict = load_d4rl_dataset(args.dataset)
     dataset = Transition(
-        obs=jnp.array(dataset["observations"]),
-        action=jnp.array(dataset["actions"]),
-        reward=jnp.array(dataset["rewards"]),
-        next_obs=jnp.array(dataset["next_observations"]),
-        next_action=jnp.roll(dataset["actions"], -1, axis=0),
-        done=jnp.array(dataset["terminals"]),
+        obs=jnp.array(dataset_dict["observations"]),
+        action=jnp.array(dataset_dict["actions"]),
+        reward=jnp.array(dataset_dict["rewards"]),
+        next_obs=jnp.array(dataset_dict["next_observations"]),
+        next_action=jnp.roll(dataset_dict["actions"], -1, axis=0),
+        done=jnp.array(dataset_dict["terminals"]),
     )
 
     # --- Initialize dynamics model ---

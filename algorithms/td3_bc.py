@@ -5,16 +5,18 @@ import os
 import warnings
 
 import distrax
-import d4rl
+
 import flax.linen as nn
 from flax.training.train_state import TrainState
-import gym
+import gymnasium as gym
 import jax
 import jax.numpy as jnp
 import numpy as onp
 import optax
 import tyro
 import wandb
+
+from utils import load_d4rl_dataset, get_normalized_score
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
@@ -129,7 +131,7 @@ def eval_agent(args, rng, env, agent_state):
     cum_reward = onp.zeros(args.eval_workers)
     rng, rng_reset = jax.random.split(rng)
     rng_reset = jax.random.split(rng_reset, args.eval_workers)
-    obs = env.reset()
+    obs, info = env.reset()
 
     # --- Rollout agent ---
     @jax.jit
@@ -139,14 +141,15 @@ def eval_agent(args, rng, env, agent_state):
         action = pi.sample(seed=rng)
         return jnp.nan_to_num(action)
 
-    max_episode_steps = env.env_fns[0]().spec.max_episode_steps
+    max_episode_steps = env.unwrapped.spec.max_episode_steps
     while step < max_episode_steps and not returned.all():
         # --- Take step in environment ---
         step += 1
         rng, rng_step = jax.random.split(rng)
         rng_step = jax.random.split(rng_step, args.eval_workers)
         action = _policy_step(rng_step, jnp.array(obs))
-        obs, reward, done, info = env.step(onp.array(action))
+        obs, reward, terminated, truncated, info = env.step(onp.array(action))
+        done = terminated | truncated
 
         # --- Track cumulative reward ---
         cum_reward += reward * ~returned
@@ -296,20 +299,20 @@ if __name__ == "__main__":
 
     # --- Initialize environment and dataset ---
     env = gym.vector.make(args.dataset, num_envs=args.eval_workers)
-    dataset = d4rl.qlearning_dataset(gym.make(args.dataset))
+    dataset = load_d4rl_dataset(gym.make(args.dataset))
     dataset = Transition(
-        obs=jnp.array(dataset["observations"]),
-        action=jnp.array(dataset["actions"]),
-        reward=jnp.array(dataset["rewards"]),
-        next_obs=jnp.array(dataset["next_observations"]),
-        done=jnp.array(dataset["terminals"]),
+        obs=jnp.array(dataset_dict["observations"]),
+        action=jnp.array(dataset_dict["actions"]),
+        reward=jnp.array(dataset_dict["rewards"]),
+        next_obs=jnp.array(dataset_dict["next_observations"]),
+        done=jnp.array(dataset_dict["terminals"]),
     )
 
     # --- Initialize agent and value networks ---
-    num_actions = env.single_action_space.shape[0]
+    num_actions = env.action_space.shape[0]
     obs_mean = dataset.obs.mean(axis=0)
     obs_std = jnp.nan_to_num(dataset.obs.std(axis=0), nan=1.0)
-    dummy_obs = jnp.zeros(env.single_observation_space.shape)
+    dummy_obs = jnp.zeros(env.observation_space.shape)
     dummy_action = jnp.zeros(num_actions)
     actor_net = DeterministicTanhActor(num_actions, obs_mean, obs_std)
     q_net = DualQNetwork(obs_mean, obs_std)
@@ -339,7 +342,7 @@ if __name__ == "__main__":
         # --- Evaluate agent ---
         rng, rng_eval = jax.random.split(rng)
         returns = eval_agent(args, rng_eval, env, agent_state)
-        scores = d4rl.get_normalized_score(args.dataset, returns) * 100.0
+        scores = get_normalized_score(args.dataset, returns)
 
         # --- Log metrics ---
         step = (eval_idx + 1) * args.eval_interval
@@ -360,7 +363,7 @@ if __name__ == "__main__":
         print(f"Evaluating final agent for {final_iters} iterations...")
         _rng = jax.random.split(rng, final_iters)
         rets = onp.array([eval_agent(args, _rng, env, agent_state) for _rng in _rng])
-        scores = d4rl.get_normalized_score(args.dataset, rets) * 100.0
+        scores = get_normalized_score(args.dataset, rets)
         agg_fn = lambda x, k: {k: x, f"{k}_mean": x.mean(), f"{k}_std": x.std()}
         info = agg_fn(rets, "final_returns") | agg_fn(scores, "final_scores")
 
