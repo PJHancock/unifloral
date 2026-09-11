@@ -333,7 +333,7 @@ if __name__ == "__main__":
 
     # --- Initialize environment and dataset ---
     env = gym.vector.make(args.dataset, num_envs=args.eval_workers)
-    dataset = load_d4rl_dataset(gym.make(args.dataset))
+    dataset_dict = load_d4rl_dataset(args.dataset)
     dataset = Transition(
         obs=jnp.array(dataset_dict["observations"]),
         action=jnp.array(dataset_dict["actions"]),
