@@ -14,7 +14,7 @@ parameters:
     value: 0  # Fixed seed since we're sweeping over models
   dataset:
     values:
-      - halfcheetah-medium-v2
+      - mujoco/halfcheetah/medium-v0
   algorithm:
     value: morel
   num_updates:

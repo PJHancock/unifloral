@@ -1,5 +1,5 @@
 gymnasium>=0.29.0
-minari>=0.4.0
+minari[hdf5]>=0.4.0
 gymnasium-robotics>=1.0.0
 jax[cuda]>=0.4.0
 numpy>=1.24.0

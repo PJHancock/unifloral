@@ -14,7 +14,7 @@ parameters:
     values: [0, 1, 2, 3, 4]
   dataset:
     values:
-      - halfcheetah-medium-v2
+      - mujoco/halfcheetah/medium-v0
   algorithm:
     value: unifloral_edac
   num_updates:

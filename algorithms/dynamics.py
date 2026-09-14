@@ -1,3 +1,6 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from collections import namedtuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,8 +18,9 @@ import optax
 import tyro
 import wandb
 
-from utils import load_d4rl_dataset
+from utils import load_minari_dataset, transitions_from_minari
 from termination_fns import get_termination_fn
+
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
@@ -25,7 +29,7 @@ os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 class Args:
     # --- Experiment ---
     seed: int = 0
-    dataset: str = "halfcheetah-medium-v2"
+    dataset: str = "mujoco/halfcheetah/medium-v0"
     algorithm: str = "dynamics"
     eval_interval: int = 10_000
     # --- Logging ---
@@ -466,18 +470,17 @@ if __name__ == "__main__":
         )
 
     # --- Initialize environment and dataset ---
-    env = gym.make(args.dataset)
-    dataset_dict = load_d4rl_dataset(args.dataset)
+    minari_dataset = load_minari_dataset(args.dataset)
+    transition_dict = transitions_from_minari(minari_dataset)
     dataset = Transition(
-        obs=jnp.array(dataset_dict["observations"]),
-        action=jnp.array(dataset_dict["actions"]),
-        reward=jnp.array(dataset_dict["rewards"]),
-        next_obs=jnp.array(dataset_dict["next_observations"]),
-        next_action=jnp.roll(dataset_dict["actions"], -1, axis=0),
-        done=jnp.array(dataset_dict["terminals"]),
+        obs=transition_dict["obs"],
+        action=transition_dict["action"],
+        reward=transition_dict["reward"],
+        next_obs=transition_dict["next_obs"],
+        next_action=jnp.roll(transition_dict["action"], -1, axis=0),
+        done=transition_dict["done"],
     )
-
-    # --- Initialize dynamics model ---
+    env = gym.make(minari_dataset.env_spec)
     num_actions = env.action_space.shape[0]
     dummy_delta_obs_action = jnp.zeros(env.observation_space.shape[0] + num_actions)
     dynamics_net = EnsembleDynamicsModel(

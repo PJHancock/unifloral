@@ -52,6 +52,44 @@ We implement a single script for dynamics model training: [`dynamics.py`](algori
 
 New ones coming soon 👀
 
+## 📚 Dataset Paths
+
+This repository uses **native Minari dataset IDs** (no legacy D4RL package). Use these IDs with `--dataset` or in config files:
+
+### MuJoCo Locomotion
+Updated Minari datasets include only `expert-v0`, `medium-v0`, and `simple-v0` variants per environment. Splits like `medium-expert` and `medium-replay` are not available.
+
+| Old D4RL | New Minari | Notes |
+| --- | --- | --- |
+| `hopper-medium-v2` | `mujoco/hopper/medium-v0` | ✓ Available |
+| `halfcheetah-medium-v2` | `mujoco/halfcheetah/medium-v0` | ✓ Available |
+| `halfcheetah-medium-expert-v2` | — | ✗ Use `mujoco/halfcheetah/expert-v0` or `medium-v0` |
+| `walker2d-medium-v2` | `mujoco/walker2d/medium-v0` | ✓ Available |
+| `walker2d-medium-replay-v2` | — | ✗ Replay splits not available in Minari |
+
+### Adroit Hand Tasks
+| Old D4RL | New Minari |
+| --- | --- |
+| `pen-human-v1` | `D4RL/pen/human-v2` |
+| `pen-cloned-v1` | `D4RL/pen/cloned-v2` |
+| `pen-expert-v1` | `D4RL/pen/expert-v2` |
+
+### Other Tasks
+| Old D4RL | New Minari |
+| --- | --- |
+| `kitchen-mixed-v0` | `D4RL/kitchen/mixed-v0` |
+| `maze2d-large-v1` | `D4RL/maze2d/large-v0` |
+| `antmaze-large-diverse-v2` | `D4RL/antmaze/large-diverse-v0` |
+
+**Example usage:**
+```bash
+python3 algorithms/bc.py --dataset D4RL/pen/human-v2
+python3 algorithms/iql.py --dataset mujoco/hopper/medium-v0
+python3 algorithms/cql.py --dataset mujoco/halfcheetah/expert-v0
+```
+
+For normalized score computation, D4RL-derived datasets (`D4RL/*`) include reference score metadata; MuJoCo datasets (`mujoco/*`) return unnormalized returns.
+
 ## 📊 Evaluation
 
 Our evaluation script ([`evaluation.py`](evaluation.py)) implements the protocol described in our paper, analysing the performance of a UCB bandit over a range of policy evaluations.

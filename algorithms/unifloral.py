@@ -1,3 +1,6 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from collections import namedtuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -18,8 +21,8 @@ import optax
 import tyro
 import wandb
 
-from utils import load_d4rl_dataset, get_normalized_score
 
+from utils import load_minari_dataset, transitions_from_minari, get_normalized_score
 from dynamics import (
     Transition,
     load_dynamics_model,
@@ -34,7 +37,7 @@ os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 class Args:
     # --- Experiment ---
     seed: int = 0
-    dataset: str = "halfcheetah-medium-v2"
+    dataset: str = "mujoco/halfcheetah/medium-v0"
     algorithm: str = "unifloral"
     num_updates: int = 1_000_000
     eval_interval: int = 2500
@@ -564,19 +567,22 @@ if __name__ == "__main__":
         )
 
     # --- Initialize environment and dataset ---
-    env = gym.vector.make(args.dataset, num_envs=args.eval_workers)
-    dataset = load_d4rl_dataset(gym.make(args.dataset))
+    minari_dataset = load_minari_dataset(args.dataset)
+    env = gym.make_vec(minari_dataset.env_spec, num_envs=args.eval_workers)
+    transition_dict = transitions_from_minari(minari_dataset)
     dataset = Transition(
-        obs=jnp.array(dataset_dict["observations"]),
-        action=jnp.array(dataset_dict["actions"]),
-        reward=jnp.array(dataset_dict["rewards"]),
-        next_obs=jnp.array(dataset_dict["next_observations"]),
-        next_action=jnp.roll(dataset_dict["actions"], -1, axis=0),
-        done=jnp.array(dataset_dict["terminals"]),
+        obs=transition_dict["obs"],
+        action=transition_dict["action"],
+        reward=transition_dict["reward"],
+        next_obs=transition_dict["next_obs"],
+        next_action=jnp.roll(transition_dict["action"], -1, axis=0),
+        done=transition_dict["done"],
     )
 
     # --- Initialize networks ---
-    num_actions = env.action_space.shape[0]
+    base_env = gym.make(minari_dataset.env_spec)
+    num_actions = base_env.action_space.shape[0]
+    base_env.close()
     data_mean = jax.tree_map(lambda x: jnp.mean(x, axis=0), dataset)
     data_std = jax.tree_map(lambda x: jnp.std(x, axis=0), dataset)
     dummy_obs = jnp.zeros(env.observation_space.shape)
@@ -663,16 +669,16 @@ if __name__ == "__main__":
         # --- Evaluate agent ---
         rng, rng_eval = jax.random.split(rng)
         returns = eval_agent(args, rng_eval, env, agent_state)
-        scores = get_normalized_score(args.dataset, returns)
+        scores = get_normalized_score(minari_dataset, returns)
 
         # --- Log metrics ---
         step = (eval_idx + 1) * args.eval_interval
-        print("Step:", step, f"\t Score: {scores.mean():.2f}")
+        print("Step:", step, f"\t Score: {onp.mean(scores):.2f}")
         if args.log:
             log_dict = {
                 "return": returns.mean(),
-                "score": scores.mean(),
-                "score_std": scores.std(),
+                "score": onp.mean(scores),
+                "score_std": onp.std(scores),
                 "num_updates": step,
                 **{k: loss[k][-1] for k in loss},
             }
