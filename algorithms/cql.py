@@ -17,6 +17,10 @@ import optax
 import tyro
 import wandb
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils import load_minari_dataset, transitions_from_minari, get_normalized_score
 
 
@@ -345,9 +349,7 @@ if __name__ == "__main__":
 
     # --- Initialize environment and dataset ---
     minari_dataset = load_minari_dataset(args.dataset)
-    env = gym.make_vec(minari_dataset.env_spec, num_envs=args.eval_workers)(
-        [lambda: gym.make(args.dataset) for _ in range(args.eval_workers)]
-    )
+    env = gym.make_vec(minari_dataset.env_spec, num_envs=args.eval_workers)
     dataset = Transition(**transitions_from_minari(minari_dataset))
 
     # --- Initialize agent and value networks ---
@@ -416,7 +418,8 @@ if __name__ == "__main__":
         # --- Write final returns to file ---
         os.makedirs("final_returns", exist_ok=True)
         time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"{args.algorithm}_{args.dataset}_{time_str}.npz"
+        safe_dataset = args.dataset.replace("/", "-")
+        filename = f"{args.algorithm}_{safe_dataset}_{time_str}.npz"
         with open(os.path.join("final_returns", filename), "wb") as f:
             onp.savez_compressed(f, **info, args=asdict(args))
 

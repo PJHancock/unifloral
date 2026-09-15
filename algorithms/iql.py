@@ -15,7 +15,10 @@ import numpy as onp
 import optax
 import tyro
 import wandb
+import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils import load_minari_dataset, transitions_from_minari, get_normalized_score
 
 
@@ -358,7 +361,8 @@ if __name__ == "__main__":
         # --- Write final returns to file ---
         os.makedirs("final_returns", exist_ok=True)
         time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"{args.algorithm}_{args.dataset}_{time_str}.npz"
+        safe_dataset = args.dataset.replace("/", "-")
+        filename = f"{args.algorithm}_{safe_dataset}_{time_str}.npz"
         with open(os.path.join("final_returns", filename), "wb") as f:
             onp.savez_compressed(f, **info, args=asdict(args))
 

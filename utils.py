@@ -18,6 +18,25 @@ def load_minari_dataset(dataset_id: str):
 	return minari.load_dataset(dataset_id, download=True)
 
 
+def _flatten_obs(obs):
+	"""Flatten observation (handles both flat arrays and dict of arrays)."""
+	if isinstance(obs, dict):
+		# For goal-conditioned envs (e.g., kitchen), flatten dict recursively
+		flat_parts = []
+		for key in sorted(obs.keys()):
+			val = obs[key]
+			if isinstance(val, dict):
+				flat_parts.append(_flatten_obs(val))
+			elif isinstance(val, np.ndarray):
+				flat_parts.append(val.reshape(val.shape[0], -1) if val.ndim > 1 else val)
+		return np.concatenate(flat_parts, axis=-1)
+	elif isinstance(obs, np.ndarray):
+		# Flat array observation
+		return obs.reshape(obs.shape[0], -1) if obs.ndim > 1 else obs
+	else:
+		raise ValueError(f"Unsupported observation type: {type(obs)}")
+
+
 def transitions_from_minari(minari_dataset):
 	"""Flatten a MinariDataset's episodes into transition-level arrays.
 
@@ -29,8 +48,13 @@ def transitions_from_minari(minari_dataset):
 	"""
 	obs, next_obs, actions, rewards, dones = [], [], [], [], []
 	for episode in minari_dataset.iterate_episodes():
-		obs.append(episode.observations[:-1])
-		next_obs.append(episode.observations[1:])
+		# Flatten full observations first, then slice
+		flat_observations = _flatten_obs(episode.observations)
+		ep_obs = flat_observations[:-1]
+		ep_next_obs = flat_observations[1:]
+
+		obs.append(ep_obs)
+		next_obs.append(ep_next_obs)
 		actions.append(episode.actions)
 		rewards.append(episode.rewards)
 		dones.append(episode.terminations)
