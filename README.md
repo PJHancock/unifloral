@@ -74,12 +74,12 @@ Updated Minari datasets include only `expert-v0`, `medium-v0`, and `simple-v0` v
 | `pen-cloned-v1` | `D4RL/pen/cloned-v2` |
 | `pen-expert-v1` | `D4RL/pen/expert-v2` |
 
-### Other Tasks
+### Navigation & Kitchen Tasks
 | Old D4RL | New Minari |
 | --- | --- |
-| `kitchen-mixed-v0` | `D4RL/kitchen/mixed-v0` |
-| `maze2d-large-v1` | `D4RL/maze2d/large-v0` |
-| `antmaze-large-diverse-v2` | `D4RL/antmaze/large-diverse-v0` |
+| `kitchen-mixed-v0` | `D4RL/kitchen/mixed-v2` |
+| `pointmaze-large-v0` | `D4RL/pointmaze/large-v2` |
+| `antmaze-large-diverse-v2` | `D4RL/antmaze/large-diverse-v2` |
 
 **Example usage:**
 ```bash
