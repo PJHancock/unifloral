@@ -57,7 +57,7 @@ New ones coming soon 👀
 This repository uses **native Minari dataset IDs** (no legacy D4RL package). Use these IDs with `--dataset` or in config files:
 
 ### MuJoCo Locomotion
-Updated Minari datasets include only `expert-v0`, `medium-v0`, and `simple-v0` variants per environment. Splits like `medium-expert` and `medium-replay` are not available.
+Updated Minari datasets include only `expert-v0`, `medium-v0`, and `simple-v0` variants per environment. Splits like `medium-expert` and `medium-replay` are no longer available.
 
 | Old D4RL | New Minari | Notes |
 | --- | --- | --- |

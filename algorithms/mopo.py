@@ -1,6 +1,3 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 from collections import namedtuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
