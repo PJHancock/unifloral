@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from collections import namedtuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -201,7 +202,7 @@ if __name__ == "__main__":
     base_env.close()
     obs_mean = dataset.obs.mean(axis=0)
     obs_std = jnp.nan_to_num(dataset.obs.std(axis=0), nan=1.0)
-    dummy_obs = jnp.zeros(env.observation_space.shape)
+    dummy_obs = jnp.zeros(base_env.observation_space.shape)
     dummy_action = jnp.zeros(num_actions)
     actor_net = DeterministicTanhActor(num_actions, obs_mean, obs_std)
 

@@ -585,7 +585,7 @@ if __name__ == "__main__":
     base_env.close()
     data_mean = jax.tree_map(lambda x: jnp.mean(x, axis=0), dataset)
     data_std = jax.tree_map(lambda x: jnp.std(x, axis=0), dataset)
-    dummy_obs = jnp.zeros(env.observation_space.shape)
+    dummy_obs = jnp.zeros(base_env.observation_space.shape)
     dummy_action = jnp.zeros(num_actions)
     actor_net = Actor(
         args=args, data_mean=data_mean, data_std=data_std, num_actions=num_actions
@@ -690,7 +690,7 @@ if __name__ == "__main__":
         print(f"Evaluating final agent for {final_iters} iterations...")
         _rng = jax.random.split(rng, final_iters)
         rets = onp.array([eval_agent(args, _rng, env, agent_state) for _rng in _rng])
-        scores = get_normalized_score(args.dataset, rets)
+        scores = get_normalized_score(minari_dataset, rets)
         agg_fn = lambda x, k: {k: x, f"{k}_mean": x.mean(), f"{k}_std": x.std()}
         info = agg_fn(rets, "final_returns") | agg_fn(scores, "final_scores")
 

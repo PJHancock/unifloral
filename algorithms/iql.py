@@ -300,7 +300,7 @@ if __name__ == "__main__":
     base_env.close()
     obs_mean = dataset.obs.mean(axis=0)
     obs_std = jnp.nan_to_num(dataset.obs.std(axis=0), nan=1.0)
-    dummy_obs = jnp.zeros(env.observation_space.shape)
+    dummy_obs = jnp.zeros(base_env.observation_space.shape)
     dummy_action = jnp.zeros(num_actions)
     actor_net = TanhGaussianActor(num_actions, obs_mean, obs_std)
     q_net = DualQNetwork(obs_mean, obs_std)

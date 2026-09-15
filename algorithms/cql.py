@@ -357,7 +357,7 @@ if __name__ == "__main__":
     base_env = gym.make(minari_dataset.env_spec)
     num_actions = base_env.action_space.shape[0]
     base_env.close()
-    dummy_obs = jnp.zeros(env.observation_space.shape)
+    dummy_obs = jnp.zeros(base_env.observation_space.shape)
     dummy_action = jnp.zeros(num_actions)
     actor_net = TanhGaussianActor(num_actions)
     q_net = VectorQ(args.num_critics)

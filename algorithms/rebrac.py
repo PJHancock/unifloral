@@ -347,11 +347,11 @@ if __name__ == "__main__":
     # --- Initialize agent and value networks ---
     base_env = gym.make(minari_dataset.env_spec)
     num_actions = base_env.action_space.shape[0]
-    base_env.close()
     obs_mean = dataset.obs.mean(axis=0)
     obs_std = jnp.nan_to_num(dataset.obs.std(axis=0), nan=1.0)
-    dummy_obs = jnp.zeros(env.observation_space.shape)
+    dummy_obs = jnp.zeros(base_env.observation_space.shape)
     dummy_action = jnp.zeros(num_actions)
+    base_env.close()
     actor_cls = DeterministicTanhActor
     actor_net = actor_cls(num_actions, obs_mean, obs_std, args.actor_ln, args.norm_obs)
     q_net = DualQNetwork(obs_mean, obs_std, args.critic_ln, args.norm_obs)
@@ -402,7 +402,7 @@ if __name__ == "__main__":
         print(f"Evaluating final agent for {final_iters} iterations...")
         _rng = jax.random.split(rng, final_iters)
         rets = onp.array([eval_agent(args, _rng, env, agent_state) for _rng in _rng])
-        scores = get_normalized_score(args.dataset, rets)
+        scores = get_normalized_score(minari_dataset, rets)
         agg_fn = lambda x, k: {k: x, f"{k}_mean": x.mean(), f"{k}_std": x.std()}
         info = agg_fn(rets, "final_returns") | agg_fn(scores, "final_scores")
 
