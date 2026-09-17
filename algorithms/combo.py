@@ -6,7 +6,6 @@ import os
 import warnings
 
 import distrax
-
 import flax.linen as nn
 from flax.linen.initializers import constant, uniform
 from flax.training.train_state import TrainState
@@ -19,9 +18,7 @@ import tyro
 import wandb
 
 from utils import load_minari_dataset, transitions_from_minari, get_normalized_score, create_dummy_obs, flatten_observation
-
 from dynamics import (
-
     Transition,
     load_dynamics_model,
     EnsembleDynamics,  # required for loading dynamics model

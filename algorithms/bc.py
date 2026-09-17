@@ -14,7 +14,6 @@ import numpy as onp
 import optax
 import tyro
 import wandb
-import minari
 
 from utils import load_minari_dataset, transitions_from_minari, get_normalized_score, create_dummy_obs, flatten_observation
 

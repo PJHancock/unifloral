@@ -19,7 +19,6 @@ import wandb
 
 from utils import load_minari_dataset, transitions_from_minari, get_normalized_score, create_dummy_obs, flatten_observation
 
-
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
 
