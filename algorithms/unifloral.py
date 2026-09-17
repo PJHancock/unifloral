@@ -18,11 +18,6 @@ import optax
 import tyro
 import wandb
 
-
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils import load_minari_dataset, transitions_from_minari, get_normalized_score, create_dummy_obs, flatten_observation
 from dynamics import (
     Transition,
