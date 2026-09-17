@@ -15,7 +15,6 @@ import optax
 import tyro
 import wandb
 import minari
-import numpy as np
 
 from utils import load_minari_dataset, transitions_from_minari, get_normalized_score, create_dummy_obs, flatten_observation
 
@@ -234,8 +233,8 @@ if __name__ == "__main__":
         if args.log:
             log_dict = {
                 "return": returns.mean(),
-                "score": np.mean(scores),
-                "score_std": np.std(scores),
+                "score": onp.mean(scores),
+                "score_std": onp.std(scores),
                 "num_updates": step,
                 **{k: loss[k][-1] for k in loss},
             }
