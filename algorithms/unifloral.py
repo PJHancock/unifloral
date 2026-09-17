@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils import load_minari_dataset, transitions_from_minari, get_normalized_score
+from utils import load_minari_dataset, transitions_from_minari, get_normalized_score, create_dummy_obs, flatten_observation
 from dynamics import (
     Transition,
     load_dynamics_model,
@@ -258,6 +258,7 @@ def eval_agent(args, rng, env, agent_state):
     rng, rng_reset = jax.random.split(rng)
     rng_reset = jax.random.split(rng_reset, args.eval_workers)
     obs, info = env.reset()
+    obs = flatten_observation(obs)
 
     # --- Rollout agent ---
     @jax.jit
@@ -275,6 +276,7 @@ def eval_agent(args, rng, env, agent_state):
         rng_step = jax.random.split(rng_step, args.eval_workers)
         action = _policy_step(rng_step, jnp.array(obs))
         obs, reward, terminated, truncated, info = env.step(onp.array(action))
+        obs = flatten_observation(obs)
         done = terminated | truncated
 
         # --- Track cumulative reward ---
@@ -586,7 +588,8 @@ if __name__ == "__main__":
     base_env.close()
     data_mean = jax.tree_map(lambda x: jnp.mean(x, axis=0), dataset)
     data_std = jax.tree_map(lambda x: jnp.std(x, axis=0), dataset)
-    dummy_obs = jnp.zeros(base_env.observation_space.shape)
+    dummy_obs = create_dummy_obs(base_env.observation_space)
+    dummy_obs = flatten_observation(dummy_obs)  # Ensure flat for network init
     dummy_action = jnp.zeros(num_actions)
     actor_net = Actor(
         args=args, data_mean=data_mean, data_std=data_std, num_actions=num_actions
