@@ -88,13 +88,6 @@ python3 algorithms/iql.py --dataset mujoco/hopper/medium-v0
 python3 algorithms/cql.py --dataset mujoco/halfcheetah/expert-v0
 ```
 
-**Normalized Score Normalization:**
-Minari's `get_normalized_score()` normalizes episode returns to a [0, 100] scale using reference bounds stored in each dataset:
-- **D4RL-derived datasets** (`D4RL/*`, e.g., `D4RL/pen/human-v2`, `D4RL/antmaze/large-play-v2`) include `ref_min_score` and `ref_max_score` metadata, computed from random and expert policy returns. The normalized score formula is: `(return - ref_min) / (ref_max - ref_min) × 100`
-- **MuJoCo datasets** (`mujoco/*`, e.g., `mujoco/halfcheetah/medium-v0`) do not include these reference bounds. When reference scores are unavailable, `get_normalized_score()` falls back gracefully and returns raw (unnormalized) returns.
-
-**Practical impact:** When reporting results, D4RL-trained policies will show normalized scores (0–100 scale, where 50 = random, 100 = expert); MuJoCo-trained policies will show raw episode returns. Normalize manually if needed by dividing by typical expert return for the task.
-
 ## 📊 Evaluation
 
 Our evaluation script ([`evaluation.py`](evaluation.py)) implements the protocol described in our paper, analysing the performance of a UCB bandit over a range of policy evaluations.
