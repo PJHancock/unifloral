@@ -9,7 +9,6 @@ ENV PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
-    cmake \
     pkg-config \
     wget \
     git \
