@@ -1,5 +1,7 @@
 """Utility functions for offline RL experiments."""
 
+import warnings
+
 import gymnasium as gym
 import minari
 import numpy as np
@@ -140,20 +142,85 @@ def create_dummy_obs(observation_space):
 		raise ValueError(f"Unsupported observation space type: {type(observation_space)}")
 
 
-def get_normalized_score(minari_dataset, returns):
-	"""Normalize returns to a 0-100 scale using Minari's stored reference scores.
+# D4RL reference scores for environments in Minari's mujoco/ namespace, which (unlike
+# D4RL/* Minari datasets) do not carry ref_min_score/ref_max_score metadata. Source:
+# d4rl/infos.py (https://github.com/Farama-Foundation/D4RL) 
+# One (min, max) pair per environment, shared across
+# all dataset splits (medium, medium-expert, expert, random, medium-replay, ...), per
+# D4RL's own convention of one ref_min/ref_max per environment regardless of split.
+_D4RL_REFERENCE_SCORES = {
+	"halfcheetah": (-280.178953, 12135.0),
+	"hopper": (-20.272305, 3234.3),
+	"walker2d": (1.629008, 4592.3),
+}
 
-	Falls back to raw returns if the dataset has no ref_min_score/ref_max_score
-	(true for most non-D4RL-derived Minari datasets, e.g. the mujoco/ namespace).
+
+def _lookup_fallback_reference_score(minari_dataset):
+	"""Find (ref_min, ref_max) for a dataset by matching its ID against known envs.
+
+	Returns None if no match is found.
+	"""
+	dataset_id = getattr(minari_dataset, "id", None) or getattr(
+		minari_dataset.spec, "dataset_id", ""
+	)
+	dataset_id = dataset_id.lower()
+	for env_name, bounds in _D4RL_REFERENCE_SCORES.items():
+		if env_name in dataset_id:
+			return bounds
+	return None
+
+
+def get_normalized_score(minari_dataset, returns):
+	"""Normalize returns to a 0-100 scale using reference min/max scores.
+
+	Tries Minari's own stored ref_min_score/ref_max_score metadata first (valid for
+	D4RL/pen, D4RL/pointmaze, D4RL/antmaze, etc.). Most non-D4RL-derived Minari
+	datasets (notably the mujoco/ namespace: mujoco/halfcheetah, mujoco/hopper,
+	mujoco/walker2d) do not carry this metadata, so this function falls back to a
+	small locally-maintained table of D4RL reference scores for those environments.
+
+	If a dataset has neither Minari metadata nor a local fallback entry, this
+	function emits a UserWarning and returns the raw, unnormalized returns rather
+	than raising -- raising would crash long-running training loops over what is
+	likely just a newly-added dataset that hasn't been added to the fallback table
+	yet. Callers should watch for this warning; raw returns are not comparable
+	across datasets/methods.
+
+	Known limitation (out of scope for this fix): D4RL/kitchen/mixed-v2's Minari
+	reward is a persistent/monotonic completion indicator rather than D4RL's
+	original one-time sparse reward, so its summed episode returns (roughly 154-428)
+	do not correspond to its stored ref_max_score of 4.0, and normalized scores for
+	Kitchen should not be trusted even though this function will not warn about it
+	(it does have valid metadata, so the Minari path succeeds "silently"). Fixing
+	this would require changing return computation in each algorithm's eval loop
+	and is deliberately not addressed here.
 
 	Args:
 		minari_dataset: A MinariDataset object.
 		returns: Episode returns to normalize (scalar or array).
 
 	Returns:
-		Normalized score(s) in range [0, 100], or raw returns if normalization unavailable.
+		Normalized score(s) in range [0, 100] if reference bounds are available
+		(via Minari metadata or the local fallback table), otherwise raw returns.
 	"""
 	try:
 		return minari.get_normalized_score(minari_dataset, np.asarray(returns)) * 100.0
-	except ValueError:
-		return returns
+	except (ValueError, AttributeError):
+		pass
+
+	fallback = _lookup_fallback_reference_score(minari_dataset)
+	if fallback is not None:
+		ref_min, ref_max = fallback
+		return (np.asarray(returns) - ref_min) / (ref_max - ref_min) * 100.0
+
+	dataset_id = getattr(minari_dataset, "id", "<unknown dataset>")
+	warnings.warn(
+		f"No normalization reference scores available for dataset '{dataset_id}' "
+		"(neither Minari metadata nor local fallback table). Returning raw, "
+		"unnormalized returns -- these are NOT comparable across datasets/methods. "
+		"Add an entry to _D4RL_REFERENCE_SCORES in utils.py if a D4RL reference "
+		"score exists for this environment.",
+		UserWarning,
+		stacklevel=2,
+	)
+	return returns
