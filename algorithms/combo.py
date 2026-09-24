@@ -171,7 +171,7 @@ def eval_agent(args, rng, env, agent_state):
         action = pi.sample(seed=rng)
         return jnp.nan_to_num(action)
 
-    max_episode_steps = env.unwrapped.spec.max_episode_steps
+    max_episode_steps = min(env.unwrapped.spec.max_episode_steps, 5000)
     while step < max_episode_steps and not returned.all():
         # --- Take step in environment ---
         step += 1
