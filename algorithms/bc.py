@@ -145,7 +145,7 @@ def make_train_step(args, actor_apply_fn, dataset):
         batch_indices = jax.random.randint(
             rng_batch, (args.batch_size,), 0, len(dataset.obs)
         )
-        batch = jax.tree_util.tree_map(lambda x: x[batch_indices], dataset)
+        batch = jax.tree.map(lambda x: x[batch_indices], dataset)
 
         # --- Update actor ---
         def _actor_loss_function(params):

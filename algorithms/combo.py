@@ -196,7 +196,7 @@ def eval_agent(args, rng, env, agent_state):
 def sample_from_buffer(buffer, batch_size, rng):
     """Sample a batch from the buffer."""
     idxs = jax.random.randint(rng, (batch_size,), 0, len(buffer.obs))
-    return jax.tree_map(lambda x: x[idxs], buffer)
+    return jax.tree.map(lambda x: x[idxs], buffer)
 
 
 r"""
@@ -237,7 +237,7 @@ def make_train_step(
         rollout_size = args.batch_size - dataset_size
         dataset_batch = sample_from_buffer(dataset, dataset_size, rng_dataset)
         rollout_batch = sample_from_buffer(rollout_buffer, rollout_size, rng_rollout)
-        batch = jax.tree_map(
+        batch = jax.tree.map(
             lambda x, y: jnp.concatenate([x, y]), dataset_batch, rollout_batch
         )
 
@@ -429,7 +429,7 @@ if __name__ == "__main__":
     dynamics_model.dataset = dataset
     max_buffer_size = args.rollout_batch_size * args.rollout_length
     max_buffer_size *= args.model_retain_epochs
-    rollout_buffer = jax.tree_map(
+    rollout_buffer = jax.tree.map(
         lambda x: jnp.zeros((max_buffer_size, *x.shape[1:])),
         dataset,
     )

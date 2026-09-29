@@ -212,7 +212,7 @@ def make_train_step(args, actor_apply_fn, q_apply_fn, dataset):
         batch_indices = jax.random.randint(
             rng_batch, (args.batch_size,), 0, len(dataset.obs)
         )
-        batch = jax.tree_util.tree_map(lambda x: x[batch_indices], dataset)
+        batch = jax.tree.map(lambda x: x[batch_indices], dataset)
 
         # --- Update critics ---
         def _update_critics(runner_state, _):
