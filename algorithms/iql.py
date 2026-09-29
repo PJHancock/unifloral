@@ -26,6 +26,7 @@ class Args:
     # --- Experiment ---
     seed: int = 0
     dataset: str = "mujoco/halfcheetah/medium-v0"
+    dataset_fraction: float = 1.0
     algorithm: str = "iql"
     num_updates: int = 1_000_000
     eval_interval: int = 2500
@@ -290,7 +291,9 @@ if __name__ == "__main__":
     # --- Initialize environment and dataset ---
     minari_dataset = load_minari_dataset(args.dataset)
     env = gym.make_vec(minari_dataset.env_spec, num_envs=args.eval_workers)
-    dataset = Transition(**transitions_from_minari(minari_dataset))
+    dataset = Transition(
+        **transitions_from_minari(minari_dataset, args.dataset_fraction, args.seed)
+    )
 
     # --- Initialize agent and value networks ---
     base_env = gym.make(minari_dataset.env_spec)

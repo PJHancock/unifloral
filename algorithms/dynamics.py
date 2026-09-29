@@ -1,6 +1,5 @@
 from collections import namedtuple
 from dataclasses import dataclass
-from datetime import datetime
 import os
 import pickle
 from typing import Optional
@@ -27,6 +26,7 @@ class Args:
     # --- Experiment ---
     seed: int = 0
     dataset: str = "mujoco/halfcheetah/medium-v0"
+    dataset_fraction: float = 1.0
     algorithm: str = "dynamics"
     eval_interval: int = 10_000
     # --- Logging ---
@@ -326,11 +326,22 @@ def create_dataset_iter(rng, inputs, targets, batch_size):
 
 def save_dynamics_model(args, dynamics_model):
     """Save the EnsembleDynamics object."""
-    filename = f"ensemble_dynamics_model_{args.dataset}"
-    filename += f"_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pkl"
-    os.makedirs(args.model_path, exist_ok=True)
-    with open(os.path.join(args.model_path, filename), "wb") as f:
+    path = dynamics_model_path(
+        args.dataset, args.dataset_fraction, args.seed, args.model_path
+    )
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
         pickle.dump(dynamics_model, f)
+
+
+def dynamics_model_path(dataset, dataset_fraction, seed, model_dir="dynamics_models"):
+    dataset_name = dataset.replace("/", "_")
+    fraction_name = format(dataset_fraction, "g").replace(".", "p")
+    filename = (
+        f"ensemble_dynamics_model_{dataset_name}_fraction_{fraction_name}"
+        f"_seed_{seed}.pkl"
+    )
+    return os.path.join(model_dir, filename)
 
 
 def load_dynamics_model(path):
@@ -468,7 +479,9 @@ if __name__ == "__main__":
 
     # --- Initialize environment and dataset ---
     minari_dataset = load_minari_dataset(args.dataset)
-    transition_dict = transitions_from_minari(minari_dataset)
+    transition_dict = transitions_from_minari(
+        minari_dataset, args.dataset_fraction, args.seed
+    )
     dataset = Transition(
         obs=transition_dict["obs"],
         action=transition_dict["action"],

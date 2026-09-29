@@ -1,4 +1,8 @@
 __pycache__/
 wandb/
 dynamics_models/
-final_returns/
+final_returns*/
+logs/
+evaluation_plots*
+*.sif
+*.ipynb

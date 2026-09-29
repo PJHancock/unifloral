@@ -21,6 +21,7 @@ from utils import load_minari_dataset, transitions_from_minari, get_normalized_s
 from dynamics import (
     Transition,
     load_dynamics_model,
+    dynamics_model_path,
     EnsembleDynamics,  # required for loading dynamics model
     EnsembleDynamicsModel,  # required for loading dynamics model
 )
@@ -33,6 +34,7 @@ class Args:
     # --- Experiment ---
     seed: int = 0
     dataset: str = "mujoco/halfcheetah/medium-v0"
+    dataset_fraction: float = 1.0
     algorithm: str = "combo"
     num_updates: int = 3_000_000
     eval_interval: int = 2500
@@ -385,7 +387,9 @@ if __name__ == "__main__":
     # --- Initialize environment and dataset ---
     minari_dataset = load_minari_dataset(args.dataset)
     env = gym.make_vec(minari_dataset.env_spec, num_envs=args.eval_workers)
-    transition_dict = transitions_from_minari(minari_dataset)
+    transition_dict = transitions_from_minari(
+        minari_dataset, args.dataset_fraction, args.seed
+    )
     dataset = Transition(
         obs=transition_dict["obs"],
         action=transition_dict["action"],
@@ -417,8 +421,11 @@ if __name__ == "__main__":
     )
 
     # --- Initialize buffer and rollout function ---
-    assert args.model_path, "Model path must be provided for model-based methods"
-    dynamics_model = load_dynamics_model(args.model_path)
+    model_path = args.model_path or dynamics_model_path(
+        args.dataset, args.dataset_fraction, args.seed
+    )
+    assert model_path, "Model path must be provided for model-based methods"
+    dynamics_model = load_dynamics_model(model_path)
     dynamics_model.dataset = dataset
     max_buffer_size = args.rollout_batch_size * args.rollout_length
     max_buffer_size *= args.model_retain_epochs

@@ -39,15 +39,20 @@ def _flatten_obs(obs):
 		raise ValueError(f"Unsupported observation type: {type(obs)}")
 
 
-def transitions_from_minari(minari_dataset):
+def transitions_from_minari(minari_dataset, dataset_fraction=1.0, seed=0):
 	"""Flatten a MinariDataset's episodes into transition-level arrays.
 
 	Args:
 		minari_dataset: A MinariDataset object.
+		dataset_fraction: Fraction of transitions to sample uniformly without replacement.
+		seed: Random seed used to select transitions.
 
 	Returns:
 		A dict with keys: obs, action, reward, next_obs, done (all as JAX arrays).
 	"""
+	if not 0 < dataset_fraction <= 1:
+		raise ValueError("dataset_fraction must be in the interval (0, 1]")
+
 	obs, next_obs, actions, rewards, dones = [], [], [], [], []
 	for episode in minari_dataset.iterate_episodes():
 		# Flatten full observations first, then slice
@@ -61,13 +66,19 @@ def transitions_from_minari(minari_dataset):
 		rewards.append(episode.rewards)
 		dones.append(episode.terminations)
 
-	return {
+	transitions = {
 		"obs": jnp.array(np.concatenate(obs)),
 		"action": jnp.array(np.concatenate(actions)),
 		"reward": jnp.array(np.concatenate(rewards)),
 		"next_obs": jnp.array(np.concatenate(next_obs)),
 		"done": jnp.array(np.concatenate(dones)),
 	}
+	if dataset_fraction < 1:
+		num_transitions = len(transitions["obs"])
+		sample_size = max(1, int(num_transitions * dataset_fraction))
+		indices = np.random.default_rng(seed).permutation(num_transitions)[:sample_size]
+		transitions = {key: values[indices] for key, values in transitions.items()}
+	return transitions
 
 
 def flatten_observation(obs):
