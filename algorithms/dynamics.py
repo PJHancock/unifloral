@@ -1,6 +1,5 @@
 from collections import namedtuple
 from dataclasses import dataclass
-from datetime import datetime
 import os
 import pickle
 from typing import Optional
@@ -27,6 +26,7 @@ class Args:
     # --- Experiment ---
     seed: int = 0
     dataset: str = "mujoco/halfcheetah/medium-v0"
+    dataset_fraction: float = 1.0
     algorithm: str = "dynamics"
     eval_interval: int = 10_000
     # --- Logging ---
@@ -143,7 +143,7 @@ class EnsembleDynamics:
         # Discard params of non-elite models
         params = frozen_dict.unfreeze(params)
         ensemble_params = params["params"]["ensemble"]
-        ensemble_params = jax.tree_map(lambda p: p[elite_idxs], ensemble_params)
+        ensemble_params = jax.tree.map(lambda p: p[elite_idxs], ensemble_params)
         params["params"]["ensemble"] = ensemble_params
         self.params = frozen_dict.freeze(params)
 
@@ -182,14 +182,14 @@ class EnsembleDynamics:
             _, rollouts = jax.lax.scan(
                 _sample_step, (init_obs, rng_rollout), None, length=rollout_length
             )
-            rollouts = jax.tree_map(
+            rollouts = jax.tree.map(
                 lambda x: x.reshape(-1, *x.shape[2:]).squeeze(), rollouts
             )
 
             # --- Update rollout buffer ---
             n = min(rollouts.obs.shape[0], rollout_buffer.obs.shape[0])
 
-            rollout_buffer = jax.tree_map(
+            rollout_buffer = jax.tree.map(
                 lambda x, y: jnp.concatenate([x[:-n], y[:n]]),
                 rollout_buffer,
                 rollouts,
@@ -266,7 +266,7 @@ def compute_model_discrepancy(train_state, dataset, elite_idxs, rng):
         # --- Extract elite model parameters to save on forward pass ---
         params = frozen_dict.unfreeze(train_state.params)
         ensemble_params = params["params"]["ensemble"]
-        ensemble_params = jax.tree_map(lambda p: p[elite_idxs], ensemble_params)
+        ensemble_params = jax.tree.map(lambda p: p[elite_idxs], ensemble_params)
         params["params"]["ensemble"] = ensemble_params
         params = frozen_dict.freeze(params)
         mean_obs_rew, _ = train_state.apply_fn(params, batch_obs_action)
@@ -317,7 +317,7 @@ def create_dataset_iter(rng, inputs, targets, batch_size):
     shuffled_inputs, shuffled_targets = inputs[perm], targets[perm]
     num_batches = inputs.shape[0] // batch_size
     iter_size = num_batches * batch_size
-    dataset_iter = jax.tree_map(
+    dataset_iter = jax.tree.map(
         lambda x: x[:iter_size].reshape(num_batches, batch_size, *x.shape[1:]),
         (shuffled_inputs, shuffled_targets),
     )
@@ -326,11 +326,22 @@ def create_dataset_iter(rng, inputs, targets, batch_size):
 
 def save_dynamics_model(args, dynamics_model):
     """Save the EnsembleDynamics object."""
-    filename = f"ensemble_dynamics_model_{args.dataset}"
-    filename += f"_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pkl"
-    os.makedirs(args.model_path, exist_ok=True)
-    with open(os.path.join(args.model_path, filename), "wb") as f:
+    path = dynamics_model_path(
+        args.dataset, args.dataset_fraction, args.seed, args.model_path
+    )
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
         pickle.dump(dynamics_model, f)
+
+
+def dynamics_model_path(dataset, dataset_fraction, seed, model_dir="dynamics_models"):
+    dataset_name = dataset.replace("/", "_")
+    fraction_name = format(dataset_fraction, "g").replace(".", "p")
+    filename = (
+        f"ensemble_dynamics_model_{dataset_name}_fraction_{fraction_name}"
+        f"_seed_{seed}.pkl"
+    )
+    return os.path.join(model_dir, filename)
 
 
 def load_dynamics_model(path):
@@ -438,7 +449,7 @@ def train_dynamics_model(train_state, args, dataset, rng):
         val_loss, val_info = jax.lax.scan(_eval_step, train_state, val_iter)[1]
         elite_idxs = val_loss.mean(axis=0).argsort()[: args.num_elites]
         if args.log:
-            val_info = jax.tree_map(lambda x: jnp.mean(x, axis=0), val_info)
+            val_info = jax.tree.map(lambda x: jnp.mean(x, axis=0), val_info)
             log_info({**val_info, "elite_idxs": elite_idxs})
         return rng, train_state, elite_idxs
 
@@ -468,7 +479,9 @@ if __name__ == "__main__":
 
     # --- Initialize environment and dataset ---
     minari_dataset = load_minari_dataset(args.dataset)
-    transition_dict = transitions_from_minari(minari_dataset)
+    transition_dict = transitions_from_minari(
+        minari_dataset, args.dataset_fraction, args.seed
+    )
     dataset = Transition(
         obs=transition_dict["obs"],
         action=transition_dict["action"],

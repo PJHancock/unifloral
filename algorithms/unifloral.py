@@ -285,7 +285,7 @@ def eval_agent(args, rng, env, agent_state):
 def sample_from_buffer(buffer, batch_size, rng):
     """Sample a batch from the buffer."""
     idxs = jax.random.randint(rng, (batch_size,), 0, len(buffer.obs))
-    return jax.tree_util.tree_map(lambda x: x[idxs], buffer)
+    return jax.tree.map(lambda x: x[idxs], buffer)
 
 
 r"""
@@ -334,7 +334,7 @@ def make_train_step(
         if args.dataset_sample_ratio < 1.0:
             rollout_size = args.batch_size - dataset_size
             rollout_batch = sample_from_buffer(rollout_buffer, rollout_size, rng_roll)
-            batch = jax.tree_util.tree_map(
+            batch = jax.tree.map(
                 lambda x, y: jnp.concatenate([x, y]), batch, rollout_batch
             )
         losses = {}
@@ -426,7 +426,7 @@ def make_train_step(
             if args.use_entropy_loss:
                 ent_coef = args.actor_entropy_coef * alpha
                 losses["actor_loss"] += ent_coef * losses["entropy_loss"]
-            losses = jax.tree_util.tree_map(jnp.mean, losses)
+            losses = jax.tree.map(jnp.mean, losses)
             return losses["actor_loss"], losses
 
         rng, rng_actor = jax.random.split(rng)
@@ -509,7 +509,7 @@ def make_train_step(
             None,
             length=args.num_critic_updates_per_step,
         )
-        losses.update(jax.tree_util.tree_map(jnp.mean, critic_losses))  # Average across updates
+        losses.update(jax.tree.map(jnp.mean, critic_losses))  # Average across updates
 
         # --- Update value function ---
         if args.use_awr or args.use_value_target:
@@ -543,7 +543,7 @@ def make_train_step(
             new_pi_target = _update_target(agent_state.actor, agent_state.actor_target)
             agent_state = agent_state._replace(actor_target=new_pi_target)
 
-        return (rng, agent_state, rollout_buffer), jax.tree_util.tree_map(jnp.mean, losses)
+        return (rng, agent_state, rollout_buffer), jax.tree.map(jnp.mean, losses)
 
     return _train_step
 
@@ -580,8 +580,8 @@ if __name__ == "__main__":
     base_env = gym.make(minari_dataset.env_spec)
     num_actions = base_env.action_space.shape[0]
     base_env.close()
-    data_mean = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), dataset)
-    data_std = jax.tree_util.tree_map(lambda x: jnp.std(x, axis=0), dataset)
+    data_mean = jax.tree.map(lambda x: jnp.mean(x, axis=0), dataset)
+    data_std = jax.tree.map(lambda x: jnp.std(x, axis=0), dataset)
     dummy_obs = create_dummy_obs(base_env.observation_space)
     dummy_obs = flatten_observation(dummy_obs)  # Ensure flat for network init
     dummy_action = jnp.zeros(num_actions)
@@ -634,7 +634,7 @@ if __name__ == "__main__":
         dynamics_model.dataset = dataset
         max_buffer_size = args.rollout_batch_size * args.rollout_length
         max_buffer_size *= args.model_retain_epochs
-        rollout_buffer = jax.tree_util.tree_map(
+        rollout_buffer = jax.tree.map(
             lambda x: jnp.zeros((max_buffer_size, *x.shape[1:])),
             dataset,
         )
