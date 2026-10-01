@@ -17,7 +17,7 @@ import optax
 import tyro
 import wandb
 
-from utils import load_minari_dataset, transitions_from_minari, get_normalized_score, create_dummy_obs, flatten_observation
+from utils import load_minari_dataset, transitions_from_minari, get_normalized_score, create_dummy_obs, flatten_observation, final_returns_directory
 from dynamics import (
     Transition,
     load_dynamics_model,
@@ -456,15 +456,16 @@ if __name__ == "__main__":
         info = agg_fn(rets, "final_returns") | agg_fn(scores, "final_scores")
 
         # --- Write final returns to file ---
-        os.makedirs("final_returns", exist_ok=True)
+        returns_dir = final_returns_directory(args.wandb_group)
+        os.makedirs(returns_dir, exist_ok=True)
         time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         safe_dataset = args.dataset.replace("/", "-")
         filename = f"{args.algorithm}_{safe_dataset}_{time_str}.npz"
-        with open(os.path.join("final_returns", filename), "wb") as f:
+        with open(os.path.join(returns_dir, filename), "wb") as f:
             onp.savez_compressed(f, **info, args=asdict(args))
 
         if args.log:
-            wandb.save(os.path.join("final_returns", filename))
+            wandb.save(os.path.join(returns_dir, filename))
 
     env.close()
     if args.log:

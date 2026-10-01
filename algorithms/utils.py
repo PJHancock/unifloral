@@ -1,11 +1,32 @@
 """Utility functions for offline RL experiments."""
 
+import os
+import re
 import warnings
 
 import gymnasium as gym
 import minari
 import numpy as np
 import jax.numpy as jnp
+
+
+def final_returns_directory(wandb_group=None):
+	"""Return the output directory for final evaluation archives.
+
+	Sweep runs are grouped under ``final_returns/<wandb_group>`` so that a
+	notebook can analyze one sweep without mixing it with other runs. Group
+	names are sanitized before being used as directory names.
+	"""
+	group = wandb_group if wandb_group is not None else os.environ.get("WANDB_GROUP", "")
+	group = str(group).strip()
+	base_dir = os.environ.get("FINAL_RETURNS_ROOT", "final_returns")
+	if not group:
+		return base_dir
+
+	safe_group = re.sub(r"[^A-Za-z0-9_.-]+", "_", group).strip("._")
+	if not safe_group:
+		raise ValueError(f"Invalid W&B group name for a directory: {group!r}")
+	return os.path.join(base_dir, safe_group)
 
 
 def load_minari_dataset(dataset_id: str):
