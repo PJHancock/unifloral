@@ -17,6 +17,11 @@ def termination_fn_halfcheetah(obs, act, next_obs):
     return done
 
 
+def termination_fn_halfcheetah_minari(obs, act, next_obs):
+    """HalfCheetah-v5 never terminates; its TimeLimit truncates episodes."""
+    return jnp.array(False)
+
+
 def termination_fn_hopper(obs, act, next_obs):
     assert len(obs.shape) == len(next_obs.shape) == len(act.shape) == 1
 
@@ -24,7 +29,7 @@ def termination_fn_hopper(obs, act, next_obs):
     angle = next_obs[1]
     not_done = (
         jnp.isfinite(next_obs).all()
-        * jnp.abs(next_obs[1:] < 100).all()
+        * (jnp.abs(next_obs[1:]) < 100).all()
         * (height > 0.7)
         * (jnp.abs(angle) < 0.2)
     )
@@ -115,6 +120,11 @@ def termination_fn_pen(obs, act, next_obs):
     return done
 
 
+def termination_fn_pen_minari(obs, act, next_obs):
+    """AdroitHandPen-v1 never terminates; its TimeLimit truncates episodes."""
+    return jnp.array(False)
+
+
 def terminaltion_fn_door(obs, act, next_obs):
     assert len(obs.shape) == len(next_obs.shape) == len(act.shape) == 1
 
@@ -178,7 +188,11 @@ def termination_fn_kitchen(obs, act, next_obs):
 
 
 def get_termination_fn(task):
-    if "halfcheetahvel" in task:
+    if task.startswith("D4RL/pen/"):
+        return termination_fn_pen_minari
+    elif task.startswith("mujoco/halfcheetah/"):
+        return termination_fn_halfcheetah_minari
+    elif "halfcheetahvel" in task:
         return termination_fn_halfcheetahveljump
     elif "halfcheetah" in task:
         return termination_fn_halfcheetah

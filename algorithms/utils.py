@@ -3,6 +3,11 @@
 import os
 import re
 import warnings
+import hashlib
+import importlib.metadata
+import json
+from pathlib import Path
+import subprocess
 
 import gymnasium as gym
 import minari
@@ -60,13 +65,15 @@ def _flatten_obs(obs):
 		raise ValueError(f"Unsupported observation type: {type(obs)}")
 
 
-def transitions_from_minari(minari_dataset, dataset_fraction=1.0, seed=0):
+def transitions_from_minari(minari_dataset, dataset_fraction=1.0, seed=0, *, include_next_action=False):
 	"""Flatten a MinariDataset's episodes into transition-level arrays.
 
 	Args:
 		minari_dataset: A MinariDataset object.
 		dataset_fraction: Fraction of transitions to sample uniformly without replacement.
 		seed: Random seed used to select transitions.
+		include_next_action: Include episode-aligned next actions and a validity
+			mask. The last action of an episode has no recorded successor.
 
 	Returns:
 		A dict with keys: obs, action, reward, next_obs, done (all as JAX arrays).
@@ -75,17 +82,29 @@ def transitions_from_minari(minari_dataset, dataset_fraction=1.0, seed=0):
 		raise ValueError("dataset_fraction must be in the interval (0, 1]")
 
 	obs, next_obs, actions, rewards, dones = [], [], [], [], []
+	next_actions, next_action_valid = [], []
 	for episode in minari_dataset.iterate_episodes():
 		# Flatten full observations first, then slice
 		flat_observations = _flatten_obs(episode.observations)
 		ep_obs = flat_observations[:-1]
 		ep_next_obs = flat_observations[1:]
+		n = len(episode.actions)
+		if n == 0:
+			continue
+		if not all(len(x) == n for x in (ep_obs, ep_next_obs, episode.rewards, episode.terminations)):
+			raise ValueError(f"Inconsistent transition lengths in episode {episode.id}")
 
 		obs.append(ep_obs)
 		next_obs.append(ep_next_obs)
 		actions.append(episode.actions)
 		rewards.append(episode.rewards)
 		dones.append(episode.terminations)
+		if include_next_action:
+			# Construct before subsampling; never cross an episode boundary.
+			next_actions.append(np.concatenate((episode.actions[1:], np.zeros_like(episode.actions[:1]))))
+			next_action_valid.append(np.arange(n) < n - 1)
+	if not obs:
+		raise ValueError("Dataset contains no transitions")
 
 	transitions = {
 		"obs": jnp.array(np.concatenate(obs)),
@@ -94,12 +113,60 @@ def transitions_from_minari(minari_dataset, dataset_fraction=1.0, seed=0):
 		"next_obs": jnp.array(np.concatenate(next_obs)),
 		"done": jnp.array(np.concatenate(dones)),
 	}
+	if include_next_action:
+		transitions["next_action"] = jnp.array(np.concatenate(next_actions))
+		transitions["next_action_valid"] = jnp.array(np.concatenate(next_action_valid))
 	if dataset_fraction < 1:
 		num_transitions = len(transitions["obs"])
 		sample_size = max(1, int(num_transitions * dataset_fraction))
 		indices = np.random.default_rng(seed).permutation(num_transitions)[:sample_size]
 		transitions = {key: values[indices] for key, values in transitions.items()}
 	return transitions
+
+
+def evaluation_reset(env, rng_keys):
+    """Seed every worker from the evaluation RNG, independently of training."""
+    seeds = [int(np.asarray(key, dtype=np.uint32)[0]) for key in np.asarray(rng_keys)]
+    return env.reset(seed=seeds)
+
+
+def validate_evaluation_actions(actions):
+    """Fail visibly if a policy is nonfinite instead of hiding it with zeros."""
+    if not np.isfinite(np.asarray(actions)).all():
+        raise FloatingPointError("Policy produced nonfinite evaluation actions")
+
+
+def collect_run_provenance(args, dataset):
+    """Optional JSON metadata for new archives; old archives remain readable."""
+    code_dir = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for path in sorted(code_dir.glob("*.py")):
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    metadata = dataset.storage.read_raw_metadata(dataset.storage.data_path)
+    metadata_hash = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
+    try:
+        commit = subprocess.check_output(
+            ["git", "-C", str(code_dir), "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        commit = None
+    versions = {}
+    for package in ("jax", "flax", "optax", "gymnasium", "gymnasium-robotics", "minari", "mujoco", "numpy"):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = None
+    return json.dumps({
+        "schema_version": 1, "algorithm_commit": commit,
+        "algorithm_sources_sha256": digest.hexdigest(),
+        "dataset_metadata_sha256": metadata_hash, "dataset_id": args.dataset,
+        "dataset_fraction": args.dataset_fraction, "subset_seed": args.seed,
+        "environment_spec": metadata.get("env_spec"),
+        "evaluation_environment_spec": metadata.get("eval_env_spec", metadata.get("env_spec")),
+        "versions": versions, "evaluation_reset_seeded": True,
+        "next_action_episode_aligned": True,
+    }, sort_keys=True)
 
 
 def flatten_observation(obs):
@@ -203,7 +270,7 @@ def _lookup_fallback_reference_score(minari_dataset):
 
 
 def get_normalized_score(minari_dataset, returns):
-	"""Normalize returns to a 0-100 scale using reference min/max scores.
+	"""Normalize returns using reference scores as 0 and 100 anchors.
 
 	Tries Minari's own stored ref_min_score/ref_max_score metadata first (valid for
 	D4RL/pen, D4RL/pointmaze, D4RL/antmaze, etc.). Most non-D4RL-derived Minari
@@ -232,7 +299,7 @@ def get_normalized_score(minari_dataset, returns):
 		returns: Episode returns to normalize (scalar or array).
 
 	Returns:
-		Normalized score(s) in range [0, 100] if reference bounds are available
+		Normalized score(s), possibly below 0 or above 100, if bounds are available
 		(via Minari metadata or the local fallback table), otherwise raw returns.
 	"""
 	try:

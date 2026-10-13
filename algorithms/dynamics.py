@@ -1,7 +1,9 @@
 from collections import namedtuple
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import os
 import pickle
+import warnings
+from types import SimpleNamespace
 from typing import Optional
 
 from flax.core import frozen_dict
@@ -14,7 +16,7 @@ import optax
 import tyro
 import wandb
 
-from utils import load_minari_dataset, transitions_from_minari
+from utils import load_minari_dataset, transitions_from_minari, collect_run_provenance
 from termination_fns import get_termination_fn
 
 
@@ -60,7 +62,10 @@ r"""
       \___/     Preliminaries
 """
 
-Transition = namedtuple("Transition", "obs action reward next_obs next_action done")
+Transition = namedtuple(
+    "Transition", "obs action reward next_obs next_action done next_action_valid",
+    defaults=(True,),
+)
 
 
 class SingleDynamicsModel(nn.Module):
@@ -161,7 +166,7 @@ class EnsembleDynamics:
             @jax.vmap
             def _sample_step(carry, _):
                 obs, rng = carry
-                rng_step, rng = jax.random.split(rng)
+                rng_step, rng_reset, rng = jax.random.split(rng, 3)
                 transition = self._sample_transition(
                     rng_step,
                     policy,
@@ -170,7 +175,11 @@ class EnsembleDynamics:
                     term_penalty_offset=term_penalty_offset,
                     threshold_coef=threshold_coef,
                 )
-                return (transition.next_obs, rng), transition
+                # Begin a fresh model rollout after a terminal transition.
+                # Continuing from its terminal state would generate invalid data.
+                reset_idx = jax.random.randint(rng_reset, (), 0, len(self.dataset.obs))
+                next_obs = jnp.where(transition.done, self.dataset.obs[reset_idx], transition.next_obs)
+                return (next_obs, rng), transition
 
             # --- Rollout in dynamics ensemble ---
             rng, rng_sample, rng_rollout = jax.random.split(rng, 3)
@@ -183,7 +192,7 @@ class EnsembleDynamics:
                 _sample_step, (init_obs, rng_rollout), None, length=rollout_length
             )
             rollouts = jax.tree.map(
-                lambda x: x.reshape(-1, *x.shape[2:]).squeeze(), rollouts
+                lambda x: x.reshape(-1, *x.shape[2:]), rollouts
             )
 
             # --- Update rollout buffer ---
@@ -223,7 +232,7 @@ class EnsembleDynamics:
         sample_mean, sample_std = ensemble_mean[sample_idx], ensemble_std[sample_idx]
         noise = jax.random.normal(key=rng_noise, shape=sample_mean.shape)
         samples = sample_mean + noise * sample_std
-        delta_obs, reward = samples[..., :-1], samples[..., -1:]
+        delta_obs, reward = samples[..., :-1], samples[..., -1]
         next_obs = obs + delta_obs
         next_action = policy(next_obs, rng_next_action)
         done = self.termination_fn(obs, action, next_obs)
@@ -243,7 +252,7 @@ class EnsembleDynamics:
             is_uncertain = jnp.max(dists) > threshold
             reward = jnp.where(is_uncertain, self.min_r + term_penalty_offset, reward)
             done |= is_uncertain
-        return Transition(obs, action, reward, next_obs, next_action, done)
+        return Transition(obs, action, reward, next_obs, next_action, done, jnp.array(True))
 
 
 def create_train_state(args, rng, network, dummy_input):
@@ -257,62 +266,47 @@ def create_train_state(args, rng, network, dummy_input):
 def compute_model_discrepancy(train_state, dataset, elite_idxs, rng):
     """
     Compute maximum distance between predictions of any two elite models.
-    Very expensive - only called at the end of model training.
+    Compare elites at the same input on up to 500,000 shuffled transitions.
     """
 
     @jax.jit
     def get_ensemble_samples(batch_obs_action):
         """Get mean predictions from ensemble dynamics model."""
-        # --- Extract elite model parameters to save on forward pass ---
-        params = frozen_dict.unfreeze(train_state.params)
-        ensemble_params = params["params"]["ensemble"]
-        ensemble_params = jax.tree.map(lambda p: p[elite_idxs], ensemble_params)
-        params["params"]["ensemble"] = ensemble_params
-        params = frozen_dict.freeze(params)
-        mean_obs_rew, _ = train_state.apply_fn(params, batch_obs_action)
-        return mean_obs_rew
+        # Keep the model's configured ensemble axis (num_ensemble), then
+        # select the elite predictions from the model outputs. Slicing the
+        # parameters first would leave a 5-member parameter tree passed to a
+        # model configured for 7 members.
+        mean_obs_rew, _ = train_state.apply_fn(
+            train_state.params, batch_obs_action
+        )
+        return mean_obs_rew[elite_idxs]
 
     # --- Get elite model predictions across subset of dataset ---
-    batch_size = 500
-    num_batches = 1000
     obs_action = jnp.concatenate((dataset.obs, dataset.action), axis=-1)
+    if not len(obs_action):
+        raise ValueError("Cannot compute discrepancy on an empty dataset")
     obs_action = jax.random.permutation(rng, obs_action, axis=0)
-    num_batches = min(num_batches, obs_action.shape[0] // batch_size)  # usually < 1000
-    num_samples = num_batches * batch_size
-    batches = obs_action[:num_samples].reshape(num_batches, batch_size, -1)
-    elite_samples = jax.lax.map(get_ensemble_samples, batches)
-    elite_samples = jnp.concatenate(elite_samples, axis=1)
+    obs_action = obs_action[:500_000]
+    batch_size = min(500, len(obs_action))
+    num_batches = (len(obs_action) + batch_size - 1) // batch_size
+    # Repeat existing samples to pad the final batch; this cannot alter a maximum.
+    idx = jnp.arange(num_batches * batch_size) % len(obs_action)
+    batches = obs_action[idx].reshape(num_batches, batch_size, -1)
 
-    # --- Compute discrepancy between elite models ---
-    def process_batch_pair(batch_idx, max_mse):
-        num_elites, output_dim = elite_samples.shape[0], elite_samples.shape[2]
-        batch_samples = jax.lax.dynamic_slice(
-            elite_samples,
-            (0, batch_idx * batch_size, 0),
-            (num_elites, batch_size, output_dim),
-        )
+    def batch_discrepancy(batch):
+        samples = get_ensemble_samples(batch)  # (elite, input, output)
+        # Compare models at the SAME input, not predictions at different states.
+        differences = samples[:, None, :, :] - samples[None, :, :, :]
+        return jnp.linalg.norm(differences, axis=-1).max()
 
-        def process_comp_batch(j):
-            # --- Compute squared distances between current and comparison batch ---
-            start_j = j * batch_size
-            comp = jax.lax.dynamic_slice(
-                elite_samples,
-                (0, start_j, 0),
-                (num_elites, batch_size, output_dim),
-            )
-            dists = batch_samples[:, None, :, None, :] - comp[None, :, None, :, :]
-            mse = jnp.sum(jnp.square(dists), axis=-1)
-            return jnp.max(mse)
-
-        batch_max_mse = jnp.max(jax.vmap(process_comp_batch)(jnp.arange(num_batches)))
-        return jnp.maximum(max_mse, batch_max_mse)
-
-    max_mse = jax.lax.fori_loop(0, num_batches, process_batch_pair, 0.0)
-    return float(jnp.sqrt(max_mse))
+    return float(jax.lax.map(batch_discrepancy, batches).max())
 
 
 def create_dataset_iter(rng, inputs, targets, batch_size):
     """Create a batched dataset iterator."""
+    if not len(inputs) or batch_size < 1:
+        raise ValueError("Dynamics partitions and batch_size must be nonempty")
+    batch_size = min(batch_size, len(inputs))
     perm = jax.random.permutation(rng, inputs.shape[0])
     shuffled_inputs, shuffled_targets = inputs[perm], targets[perm]
     num_batches = inputs.shape[0] // batch_size
@@ -324,8 +318,12 @@ def create_dataset_iter(rng, inputs, targets, batch_size):
     return dataset_iter
 
 
-def save_dynamics_model(args, dynamics_model):
+def save_dynamics_model(args, dynamics_model, source_dataset=None):
     """Save the EnsembleDynamics object."""
+    dynamics_model.training_args = asdict(args)
+    dynamics_model.discrepancy_definition = "same_input_elite_l2_v1"
+    if source_dataset is not None:
+        dynamics_model.provenance_json = collect_run_provenance(args, source_dataset)
     path = dynamics_model_path(
         args.dataset, args.dataset_fraction, args.seed, args.model_path
     )
@@ -344,11 +342,35 @@ def dynamics_model_path(dataset, dataset_fraction, seed, model_dir="dynamics_mod
     return os.path.join(model_dir, filename)
 
 
-def load_dynamics_model(path):
+def load_dynamics_model(path, *, expected_dataset=None, dataset_fraction=None, seed=None,
+                        dataset=None, recompute_discrepancy=False):
     """Load the EnsembleDynamics object."""
     print(f"Loading dynamics model from {path}")
     with open(path, "rb") as f:
         dynamics_model = pickle.load(f)
+    training_args = getattr(dynamics_model, "training_args", None)
+    if training_args is None:
+        warnings.warn("Legacy dynamics checkpoint has no dataset/fraction/seed provenance", UserWarning)
+    else:
+        expected = {"dataset": expected_dataset, "dataset_fraction": dataset_fraction, "seed": seed}
+        for key, value in expected.items():
+            if value is not None and training_args.get(key) != value:
+                raise ValueError(f"Dynamics checkpoint {key} mismatch: {training_args.get(key)!r} != {value!r}")
+    if expected_dataset is not None:
+        dynamics_model.termination_fn = get_termination_fn(expected_dataset)
+    if recompute_discrepancy and (
+        getattr(dynamics_model, "discrepancy_definition", None) != "same_input_elite_l2_v1"
+        or getattr(dynamics_model, "discrepancy", None) is None
+    ):
+        if dataset is None:
+            raise ValueError("Provide matching transitions to recompute legacy MOReL discrepancy")
+        warnings.warn("Recomputing legacy MOReL discrepancy at matching state-action inputs; checkpoint is unchanged", UserWarning)
+        state = SimpleNamespace(apply_fn=dynamics_model.dynamics_model.apply, params=dynamics_model.params)
+        dynamics_model.discrepancy = compute_model_discrepancy(
+            state, dataset, jnp.arange(dynamics_model.num_ensemble), jax.random.PRNGKey(seed or 0)
+        )
+        dynamics_model.min_r = float(jnp.min(dataset.reward))
+        dynamics_model.discrepancy_definition = "same_input_elite_l2_v1"
     return dynamics_model
 
 
@@ -378,9 +400,11 @@ def train_dynamics_model(train_state, args, dataset, rng):
     inputs = jnp.concatenate((dataset.obs, dataset.action), axis=-1)
     delta_obs = dataset.next_obs - dataset.obs
     targets = jnp.concatenate((delta_obs, dataset.reward.reshape(-1, 1)), axis=-1)
+    if len(inputs) < 2 or not 0 < args.validation_split < 1:
+        raise ValueError("Dynamics training requires at least two transitions and 0 < validation_split < 1")
 
     rng, split_rng = jax.random.split(rng)
-    train_size = int((1 - args.validation_split) * inputs.shape[0])
+    train_size = min(len(inputs) - 1, max(1, int((1 - args.validation_split) * inputs.shape[0])))
     shuffled_idxs = jax.random.permutation(split_rng, inputs.shape[0])
     train_idxs, val_idxs = shuffled_idxs[:train_size], shuffled_idxs[train_size:]
     train_inputs, train_targets = inputs[train_idxs], targets[train_idxs]
@@ -480,14 +504,15 @@ if __name__ == "__main__":
     # --- Initialize environment and dataset ---
     minari_dataset = load_minari_dataset(args.dataset)
     transition_dict = transitions_from_minari(
-        minari_dataset, args.dataset_fraction, args.seed
+        minari_dataset, args.dataset_fraction, args.seed, include_next_action=True
     )
     dataset = Transition(
         obs=transition_dict["obs"],
         action=transition_dict["action"],
         reward=transition_dict["reward"],
         next_obs=transition_dict["next_obs"],
-        next_action=jnp.roll(transition_dict["action"], -1, axis=0),
+        next_action=transition_dict["next_action"],
+        next_action_valid=transition_dict["next_action_valid"],
         done=transition_dict["done"],
     )
     env = gym.make(minari_dataset.env_spec)
@@ -527,7 +552,7 @@ if __name__ == "__main__":
         dynamics_net, train_state.params, elite_idxs, termination_fn, discrepancy, min_r
     )
     print("Saving dynamics model...")
-    save_dynamics_model(args, dynamics_model)
+    save_dynamics_model(args, dynamics_model, source_dataset=minari_dataset)
 
     env.close()
     if args.log:

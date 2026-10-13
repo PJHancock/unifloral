@@ -15,7 +15,7 @@ import optax
 import tyro
 import wandb
 
-from utils import load_minari_dataset, transitions_from_minari, get_normalized_score, create_dummy_obs, flatten_observation, final_returns_directory
+from utils import load_minari_dataset, transitions_from_minari, get_normalized_score, create_dummy_obs, flatten_observation, final_returns_directory, evaluation_reset, validate_evaluation_actions, collect_run_provenance
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
@@ -89,7 +89,7 @@ def eval_agent(args, rng, env, agent_state):
     cum_reward = onp.zeros(args.eval_workers)
     rng, rng_reset = jax.random.split(rng)
     rng_reset = jax.random.split(rng_reset, args.eval_workers)
-    obs, info = env.reset()
+    obs, info = evaluation_reset(env, rng_reset)
     obs = flatten_observation(obs)
 
     # --- Rollout agent ---
@@ -98,15 +98,18 @@ def eval_agent(args, rng, env, agent_state):
     def _policy_step(rng, obs):
         pi = agent_state.actor.apply_fn(agent_state.actor.params, obs)
         action = pi.sample(seed=rng)
-        return jnp.nan_to_num(action)
+        return action
 
-    max_episode_steps = min(env.unwrapped.spec.max_episode_steps, 5000)
+    max_episode_steps = env.unwrapped.spec.max_episode_steps
+    if max_episode_steps is None:
+        raise ValueError("Evaluation environment must declare max_episode_steps")
     while step < max_episode_steps and not returned.all():
         # --- Take step in environment ---
         step += 1
         rng, rng_step = jax.random.split(rng)
         rng_step = jax.random.split(rng_step, args.eval_workers)
         action = _policy_step(rng_step, jnp.array(obs))
+        validate_evaluation_actions(action)
         obs, reward, terminated, truncated, info = env.step(onp.array(action))
         obs = flatten_observation(obs)
         done = terminated | truncated
@@ -247,7 +250,8 @@ if __name__ == "__main__":
         final_iters = int(onp.ceil(args.eval_final_episodes / args.eval_workers))
         print(f"Evaluating final agent for {final_iters} iterations...")
         _rng = jax.random.split(rng, final_iters)
-        rets = onp.array([eval_agent(args, _rng, env, agent_state) for _rng in _rng])
+        rets = onp.concatenate([eval_agent(args, key, env, agent_state) for key in _rng])
+        rets = rets[:args.eval_final_episodes]
         scores = get_normalized_score(minari_dataset, rets)
         agg_fn = lambda x, k: {k: x, f"{k}_mean": x.mean(), f"{k}_std": x.std()}
         info = agg_fn(rets, "final_returns") | agg_fn(scores, "final_scores")
@@ -259,7 +263,10 @@ if __name__ == "__main__":
         safe_dataset = args.dataset.replace("/", "-")
         filename = f"{args.algorithm}_{safe_dataset}_{time_str}.npz"
         with open(os.path.join(returns_dir, filename), "wb") as f:
-            onp.savez_compressed(f, **info, args=asdict(args))
+            onp.savez_compressed(
+                f, **info, args=asdict(args),
+                provenance_json=collect_run_provenance(args, minari_dataset),
+            )
 
         if args.log:
             wandb.save(os.path.join(returns_dir, filename))

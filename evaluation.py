@@ -12,6 +12,8 @@ import os
 import re
 from typing import Dict, Tuple
 import warnings
+import hashlib
+import json
 
 from functools import partial
 import glob
@@ -55,7 +57,14 @@ def parse_and_load_npz(filename: str) -> Dict:
     data["algorithm"] = algorithm
     data["dataset"] = dataset
     data["datetime"] = dt
-    data.update(data.pop("args", np.array({})).item())  # Flatten args
+    args = data.pop("args", np.array({})).item()
+    data.update(args)  # Flatten args
+    data["source_file"] = str(filename)
+    data["args_json"] = json.dumps(args, sort_keys=True)
+    experiment_keys = {"seed", "dataset", "dataset_fraction", "log", "wandb_project", "wandb_team", "wandb_group"}
+    configuration = {k: v for k, v in args.items() if k not in experiment_keys}
+    data["configuration_id"] = hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()[:12]
+    data.setdefault("dataset_fraction", 1.0)
     return data
 
 
@@ -74,12 +83,17 @@ def load_results_dataframe(results_dir: str = "final_returns") -> pd.DataFrame:
     for f in npz_files:
         try:
             data = parse_and_load_npz(f)
+            scores = np.asarray(data["final_scores"]).reshape(-1)
+            if not len(scores) or not np.isfinite(scores).all():
+                raise ValueError("final_scores must be nonempty and finite")
             data_list.append(data)
         except Exception as e:
             print(f"Error loading {f}: {e}")
             continue
 
     df = pd.DataFrame(data_list).drop(columns=["Index"], errors="ignore")
+    if df.empty:
+        return df
     if "final_scores" in df.columns:
         df["final_scores"] = df["final_scores"].apply(lambda x: x.reshape(-1))
     if "final_returns" in df.columns:
@@ -87,6 +101,37 @@ def load_results_dataframe(results_dir: str = "final_returns") -> pd.DataFrame:
 
     df = df.sort_values(by=["algorithm", "dataset", "datetime"])
     return df.reset_index(drop=True)
+
+
+def prepare_plot_dataframe(df, *, pool_configurations=False, requested_arms=8):
+    """Separate data fractions and, by default, distinct training configurations.
+
+    A deliberate hyperparameter-tuning experiment can set pool_configurations=True.
+    Displayed K is the number of available policy arms, capped by requested_arms.
+    """
+    result = df.copy()
+    if "dataset_fraction" not in result:
+        result["dataset_fraction"] = 1.0
+    if "configuration_id" not in result:
+        raise ValueError("Load results with load_results_dataframe to retain configuration IDs")
+    result["plot_dataset"] = result.apply(
+        lambda row: f'{row["dataset"]} | data fraction={row["dataset_fraction"]:g}', axis=1
+    )
+    groups = ["dataset", "dataset_fraction", "algorithm"]
+    if not pool_configurations:
+        groups.append("configuration_id")
+    for _, group in result.groupby(groups, observed=True):
+        first = group.iloc[0]
+        same_algorithm = result.loc[(result["dataset"] == first["dataset"]) &
+            (result["dataset_fraction"] == first["dataset_fraction"]) &
+            (result["algorithm"] == first["algorithm"])]
+        label = first["algorithm"]
+        if not pool_configurations and same_algorithm["configuration_id"].nunique() > 1:
+            label += f' ({first["configuration_id"][:6]})'
+        k = min(requested_arms, len(group))
+        label += f" [K={k}" + (", single policy]" if k == 1 else "]")
+        result.loc[group.index, "plot_method"] = label
+    return result
 
 
 r"""
@@ -120,7 +165,7 @@ def ucb(
         Array of UCB values for each arm
     """
     exploration = jnp.sqrt(alpha * jnp.log(total_counts) / (counts + 1e-9))
-    return means + exploration
+    return jnp.where(counts == 0, jnp.inf, means + exploration)
 
 
 def argmax_with_random_tiebreaking(rng: jnp.ndarray, values: jnp.ndarray) -> int:
@@ -189,7 +234,8 @@ def run_bandit(
 
         # Calculate best arm based on current state
         updated_means = new_state.rewards / jnp.maximum(new_state.counts, 1)
-        best_arm = jnp.argmax(updated_means)
+        # Unobserved arms have no empirical mean; zero would bias negative tasks.
+        best_arm = jnp.argmax(jnp.where(new_state.counts > 0, updated_means, -jnp.inf))
         estimated_best = returns_array[best_arm].mean()
 
         return new_state, (state.total_pulls, estimated_best)
@@ -221,12 +267,17 @@ def run_bandit_trials(
     Returns:
         Tuple of (pulls, estimated_bests)
     """
+    values = np.asarray(returns_array)
+    if values.ndim != 2 or min(values.shape) < 1 or not np.isfinite(values).all():
+        raise ValueError("returns_array must be a nonempty finite (policies, episodes) array")
+    if min(num_subsample, num_repeats, max_pulls) < 1 or ucb_alpha < 0:
+        raise ValueError("Bandit counts must be positive and ucb_alpha nonnegative")
     rng = jax.random.PRNGKey(seed)
     num_policies = returns_array.shape[0]
 
-    num_subsample = min(num_subsample, num_policies)
     if num_subsample > num_policies:
-        warnings.warn("Not enough policies to subsample, using all policies")
+        warnings.warn(f"Requested {num_subsample} policy arms but only {num_policies} are available; using K={num_policies}")
+    num_subsample = min(num_subsample, num_policies)
 
     rng, rng_trials, rng_sample = jax.random.split(rng, 3)
     rng_trials = jax.random.split(rng_trials, num_repeats)
@@ -312,6 +363,8 @@ def bootstrap_bandit_trials(
     """
     rng = jax.random.PRNGKey(seed)
     rng = jax.random.split(rng, max_pulls)
+    if n_bootstraps < 1 or not 0 < confidence < 1:
+        raise ValueError("n_bootstraps must be positive and confidence must lie in (0, 1)")
 
     pulls, estimated_bests = run_bandit_trials(
         returns_array, seed, num_subsample, num_repeats, max_pulls, ucb_alpha
@@ -325,4 +378,6 @@ def bootstrap_bandit_trials(
         "estimated_bests_mean": estimated_bests_mean,
         "estimated_bests_ci_low": ci_low,
         "estimated_bests_ci_high": ci_high,
+        "actual_num_arms": min(num_subsample, returns_array.shape[0]),
+        "num_available_policies": returns_array.shape[0],
     }
