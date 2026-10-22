@@ -15,6 +15,10 @@ import numpy as np
 import jax.numpy as jnp
 
 
+DATASET_SAMPLING_STRATEGY = "trajectory_return_quantile_v1"
+DATASET_SAMPLING_QUANTILE_BINS = 5
+
+
 def final_returns_directory(wandb_group=None):
 	"""Return the output directory for final evaluation archives.
 
@@ -65,13 +69,52 @@ def _flatten_obs(obs):
 		raise ValueError(f"Unsupported observation type: {type(obs)}")
 
 
+def _sample_trajectory_indices(scores, lengths, dataset_fraction, seed):
+	"""Choose whole trajectories across return quantiles near a transition budget."""
+	num_trajectories = len(scores)
+	if dataset_fraction == 1:
+		return np.arange(num_trajectories)
+
+	num_bins = min(DATASET_SAMPLING_QUANTILE_BINS, num_trajectories)
+	ordered = np.argsort(scores, kind="stable")
+	bins = [np.asarray(items) for items in np.array_split(ordered, num_bins)]
+	rng = np.random.default_rng(seed)
+	for items in bins:
+		rng.shuffle(items)
+	# Rotate the bin order by a seeded permutation so small budgets do not always
+	# favor the lowest-return quantiles.
+	bin_order = rng.permutation(num_bins)
+	interleaved = []
+	for depth in range(max(map(len, bins))):
+		for bin_idx in bin_order:
+			if depth < len(bins[bin_idx]):
+				interleaved.append(int(bins[bin_idx][depth]))
+
+	target_transitions = sum(lengths) * dataset_fraction
+	best_count = 1
+	selected_transitions = int(lengths[interleaved[0]])
+	best_distance = abs(selected_transitions - target_transitions)
+	for count, trajectory_idx in enumerate(interleaved[1:], start=2):
+		selected_transitions += int(lengths[trajectory_idx])
+		distance = abs(selected_transitions - target_transitions)
+		# Keep the shorter prefix on ties, avoiding unnecessary budget overshoot.
+		if distance < best_distance:
+			best_count = count
+			best_distance = distance
+		elif selected_transitions > target_transitions:
+			break
+	return np.asarray(interleaved[:best_count], dtype=int)
+
+
 def transitions_from_minari(minari_dataset, dataset_fraction=1.0, seed=0, *, include_next_action=False):
-	"""Flatten a MinariDataset's episodes into transition-level arrays.
+	"""Flatten selected complete Minari episodes into transition-level arrays.
 
 	Args:
 		minari_dataset: A MinariDataset object.
-		dataset_fraction: Fraction of transitions to sample uniformly without replacement.
-		seed: Random seed used to select transitions.
+		dataset_fraction: Fraction of all transitions used as a target budget. For
+			fractions below 1, complete episodes are selected across return quantiles
+			to get as close as possible to that budget.
+		seed: Random seed used to select episodes within return quantiles.
 		include_next_action: Include episode-aligned next actions and a validity
 			mask. The last action of an episode has no recorded successor.
 
@@ -81,8 +124,7 @@ def transitions_from_minari(minari_dataset, dataset_fraction=1.0, seed=0, *, inc
 	if not 0 < dataset_fraction <= 1:
 		raise ValueError("dataset_fraction must be in the interval (0, 1]")
 
-	obs, next_obs, actions, rewards, dones = [], [], [], [], []
-	next_actions, next_action_valid = [], []
+	episodes = []
 	for episode in minari_dataset.iterate_episodes():
 		# Flatten full observations first, then slice
 		flat_observations = _flatten_obs(episode.observations)
@@ -94,34 +136,38 @@ def transitions_from_minari(minari_dataset, dataset_fraction=1.0, seed=0, *, inc
 		if not all(len(x) == n for x in (ep_obs, ep_next_obs, episode.rewards, episode.terminations)):
 			raise ValueError(f"Inconsistent transition lengths in episode {episode.id}")
 
-		obs.append(ep_obs)
-		next_obs.append(ep_next_obs)
-		actions.append(episode.actions)
-		rewards.append(episode.rewards)
-		dones.append(episode.terminations)
+		episode_data = {
+			"obs": ep_obs,
+			"action": episode.actions,
+			"reward": episode.rewards,
+			"next_obs": ep_next_obs,
+			"done": episode.terminations,
+			"score": float(np.sum(episode.rewards)),
+			"length": n,
+		}
+		if not np.isfinite(episode_data["score"]):
+			raise ValueError(f"Non-finite reward sum in episode {episode.id}")
 		if include_next_action:
 			# Construct before subsampling; never cross an episode boundary.
-			next_actions.append(np.concatenate((episode.actions[1:], np.zeros_like(episode.actions[:1]))))
-			next_action_valid.append(np.arange(n) < n - 1)
-	if not obs:
+			episode_data["next_action"] = np.concatenate((episode.actions[1:], np.zeros_like(episode.actions[:1])))
+			episode_data["next_action_valid"] = np.arange(n) < n - 1
+		episodes.append(episode_data)
+	if not episodes:
 		raise ValueError("Dataset contains no transitions")
 
-	transitions = {
-		"obs": jnp.array(np.concatenate(obs)),
-		"action": jnp.array(np.concatenate(actions)),
-		"reward": jnp.array(np.concatenate(rewards)),
-		"next_obs": jnp.array(np.concatenate(next_obs)),
-		"done": jnp.array(np.concatenate(dones)),
-	}
+	indices = _sample_trajectory_indices(
+		[sample["score"] for sample in episodes],
+		[sample["length"] for sample in episodes],
+		dataset_fraction,
+		seed,
+	)
+	keys = ("obs", "action", "reward", "next_obs", "done")
 	if include_next_action:
-		transitions["next_action"] = jnp.array(np.concatenate(next_actions))
-		transitions["next_action_valid"] = jnp.array(np.concatenate(next_action_valid))
-	if dataset_fraction < 1:
-		num_transitions = len(transitions["obs"])
-		sample_size = max(1, int(num_transitions * dataset_fraction))
-		indices = np.random.default_rng(seed).permutation(num_transitions)[:sample_size]
-		transitions = {key: values[indices] for key, values in transitions.items()}
-	return transitions
+		keys += ("next_action", "next_action_valid")
+	return {
+		key: jnp.array(np.concatenate([episodes[idx][key] for idx in indices]))
+		for key in keys
+	}
 
 
 def evaluation_reset(env, rng_keys):
@@ -162,6 +208,8 @@ def collect_run_provenance(args, dataset):
         "algorithm_sources_sha256": digest.hexdigest(),
         "dataset_metadata_sha256": metadata_hash, "dataset_id": args.dataset,
         "dataset_fraction": args.dataset_fraction, "subset_seed": args.seed,
+        "dataset_sampling_strategy": DATASET_SAMPLING_STRATEGY,
+        "dataset_sampling_quantile_bins": DATASET_SAMPLING_QUANTILE_BINS,
         "environment_spec": metadata.get("env_spec"),
         "evaluation_environment_spec": metadata.get("eval_env_spec", metadata.get("env_spec")),
         "versions": versions, "evaluation_reset_seeded": True,

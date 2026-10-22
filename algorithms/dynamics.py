@@ -16,7 +16,12 @@ import optax
 import tyro
 import wandb
 
-from utils import load_minari_dataset, transitions_from_minari, collect_run_provenance
+from utils import (
+    DATASET_SAMPLING_STRATEGY,
+    load_minari_dataset,
+    transitions_from_minari,
+    collect_run_provenance,
+)
 from termination_fns import get_termination_fn
 
 
@@ -320,7 +325,9 @@ def create_dataset_iter(rng, inputs, targets, batch_size):
 
 def save_dynamics_model(args, dynamics_model, source_dataset=None):
     """Save the EnsembleDynamics object."""
-    dynamics_model.training_args = asdict(args)
+    dynamics_model.training_args = asdict(args) | {
+        "dataset_sampling_strategy": DATASET_SAMPLING_STRATEGY,
+    }
     dynamics_model.discrepancy_definition = "same_input_elite_l2_v1"
     if source_dataset is not None:
         dynamics_model.provenance_json = collect_run_provenance(args, source_dataset)
@@ -335,9 +342,14 @@ def save_dynamics_model(args, dynamics_model, source_dataset=None):
 def dynamics_model_path(dataset, dataset_fraction, seed, model_dir="dynamics_models"):
     dataset_name = dataset.replace("/", "_")
     fraction_name = format(dataset_fraction, "g").replace(".", "p")
+    sampling_suffix = (
+        f"_sampling_{DATASET_SAMPLING_STRATEGY}"
+        if dataset_fraction < 1
+        else ""
+    )
     filename = (
         f"ensemble_dynamics_model_{dataset_name}_fraction_{fraction_name}"
-        f"_seed_{seed}.pkl"
+        f"{sampling_suffix}_seed_{seed}.pkl"
     )
     return os.path.join(model_dir, filename)
 
@@ -350,12 +362,24 @@ def load_dynamics_model(path, *, expected_dataset=None, dataset_fraction=None, s
         dynamics_model = pickle.load(f)
     training_args = getattr(dynamics_model, "training_args", None)
     if training_args is None:
+        if dataset_fraction is not None and dataset_fraction < 1:
+            raise ValueError(
+                "Cannot use a legacy dynamics checkpoint with a partial dataset "
+                "fraction because its sampling strategy is unknown; retrain it."
+            )
         warnings.warn("Legacy dynamics checkpoint has no dataset/fraction/seed provenance", UserWarning)
     else:
         expected = {"dataset": expected_dataset, "dataset_fraction": dataset_fraction, "seed": seed}
         for key, value in expected.items():
             if value is not None and training_args.get(key) != value:
                 raise ValueError(f"Dynamics checkpoint {key} mismatch: {training_args.get(key)!r} != {value!r}")
+        if dataset_fraction is not None and dataset_fraction < 1:
+            saved_strategy = training_args.get("dataset_sampling_strategy")
+            if saved_strategy != DATASET_SAMPLING_STRATEGY:
+                raise ValueError(
+                    "Dynamics checkpoint sampling strategy mismatch: "
+                    f"{saved_strategy!r} != {DATASET_SAMPLING_STRATEGY!r}; retrain it."
+                )
     if expected_dataset is not None:
         dynamics_model.termination_fn = get_termination_fn(expected_dataset)
     if recompute_discrepancy and (
